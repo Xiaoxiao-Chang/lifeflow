@@ -14,7 +14,7 @@ mkdirSync(dataDir, { recursive: true });
 
 const db = new DatabaseSync(join(dataDir, 'lifeflow.sqlite'));
 const port = Number(process.env.PORT || 8787);
-const host = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
+const host = process.env.HOST || '0.0.0.0';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
