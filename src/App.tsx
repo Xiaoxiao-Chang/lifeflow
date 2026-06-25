@@ -67,6 +67,7 @@ interface MemoItem {
 
 interface SettingsState {
   defaultPaymentMethod: string;
+  paymentMethods: string[];
   reimbursementKeywords: string;
   remindersEnabled: boolean;
   useLLM: boolean;
@@ -125,10 +126,22 @@ const demoMemos: MemoItem[] = [
 
 const defaultSettings: SettingsState = {
   defaultPaymentMethod: '',
+  paymentMethods: ['支付宝', '微信', '银行卡', '现金', '其他'],
   reimbursementKeywords: '报销,待报销,公司报,可以报,记得报,走报销',
   remindersEnabled: true,
   useLLM: true,
 };
+
+function normalizeSettings(settings: SettingsState): SettingsState {
+  const methods = Array.isArray(settings.paymentMethods) && settings.paymentMethods.length
+    ? settings.paymentMethods
+    : defaultSettings.paymentMethods;
+  return {
+    ...defaultSettings,
+    ...settings,
+    paymentMethods: Array.from(new Set([...methods.filter(Boolean), '其他'])),
+  };
+}
 
 function useStoredState<T>(key: string, initial: T) {
   const [activeKey, setActiveKey] = useState(key);
@@ -323,7 +336,7 @@ function parseByRules(text: string, settings: SettingsState): ParsedResult {
         amount,
         item: inferItem(text, '其他') || '收入',
         category: '其他',
-        paymentMethod: parsePaymentMethod(text) || '',
+        paymentMethod: parsePaymentMethod(text) || settings.defaultPaymentMethod || '',
         reimbursable: false,
         reimbursementStatus: '无需报销',
         sourceText: text,
@@ -347,7 +360,7 @@ function parseByRules(text: string, settings: SettingsState): ParsedResult {
           amount,
           item: inferItem(text, category),
           category,
-          paymentMethod: parsePaymentMethod(text) || '',
+          paymentMethod: parsePaymentMethod(text) || settings.defaultPaymentMethod || '',
           reimbursable,
           reimbursementStatus: reimbursable ? '待报销' : '无需报销',
           sourceText: text,
@@ -398,7 +411,7 @@ function readNested<T extends Record<string, unknown>>(parsed: T, key: string) {
   return parsed;
 }
 
-function qwenExpensePayload(parsed: any, text: string): Expense {
+function qwenExpensePayload(parsed: any, text: string, settings: SettingsState): Expense {
   const raw = readNested(parsed, 'expense');
   const rawCategory = String(raw.category || '');
   const category = expenseCategories.includes(rawCategory as ExpenseCategory) ? rawCategory : inferCategory(text);
@@ -413,7 +426,7 @@ function qwenExpensePayload(parsed: any, text: string): Expense {
     amount: Number(raw.amount || parseAmount(text)),
     item: String(ruleItem !== category ? ruleItem : raw.item || ruleItem),
     category: category as ExpenseCategory,
-    paymentMethod: String(explicitPayment || raw.paymentMethod || ''),
+    paymentMethod: String(explicitPayment || raw.paymentMethod || settings.defaultPaymentMethod || ''),
     reimbursable,
     reimbursementStatus: validStatus ? raw.reimbursementStatus as ReimbursementStatus : reimbursable ? '待报销' : '无需报销',
     sourceText: text,
@@ -421,7 +434,7 @@ function qwenExpensePayload(parsed: any, text: string): Expense {
   };
 }
 
-function qwenIncomePayload(parsed: any, text: string): Expense {
+function qwenIncomePayload(parsed: any, text: string, settings: SettingsState): Expense {
   const raw = readNested(parsed, 'income');
   return {
     id: uid(),
@@ -430,7 +443,7 @@ function qwenIncomePayload(parsed: any, text: string): Expense {
     amount: Number(raw.amount || parseAmount(text)),
     item: String(raw.item || inferItem(text, '其他') || '收入'),
     category: '其他',
-    paymentMethod: String(parsePaymentMethod(text) || raw.paymentMethod || ''),
+    paymentMethod: String(parsePaymentMethod(text) || raw.paymentMethod || settings.defaultPaymentMethod || ''),
     reimbursable: false,
     reimbursementStatus: '无需报销',
     sourceText: text,
@@ -468,7 +481,7 @@ query 字段: queryType(reimbursements/topExpenses/todaySchedules/weekSchedules/
         intent: 'expense',
         sourceText: text,
         engine: 'qwen',
-        expense: qwenExpensePayload(parsed, text),
+        expense: qwenExpensePayload(parsed, text, settings),
       };
     }
     if (parsed.intent === 'income') {
@@ -476,7 +489,7 @@ query 字段: queryType(reimbursements/topExpenses/todaySchedules/weekSchedules/
         intent: 'income',
         sourceText: text,
         engine: 'qwen',
-        income: qwenIncomePayload(parsed, text),
+        income: qwenIncomePayload(parsed, text, settings),
       };
     }
     if (parsed.intent === 'schedule' && parsed.schedule) {
@@ -595,7 +608,8 @@ export default function App() {
   const [expenses, setExpenses] = useStoredState<Expense[]>(`lifeflow-expenses-${storageScope}`, []);
   const [schedules, setSchedules] = useStoredState<ScheduleItem[]>(`lifeflow-schedules-${storageScope}`, []);
   const [memos, setMemos] = useStoredState<MemoItem[]>(`lifeflow-memos-${storageScope}`, []);
-  const [settings, setSettings] = useStoredState<SettingsState>(`lifeflow-settings-${storageScope}`, defaultSettings);
+  const [storedSettings, setSettings] = useStoredState<SettingsState>(`lifeflow-settings-${storageScope}`, defaultSettings);
+  const settings = normalizeSettings(storedSettings);
   const [panelOpen, setPanelOpen] = useState(false);
   const [input, setInput] = useState('');
   const [parsed, setParsed] = useState<ParsedResult | null>(null);
@@ -749,6 +763,7 @@ function exportReimbursements() {
           setParsed={setParsed}
           queryResult={queryResult}
           engineStatus={engineStatus}
+          settings={settings}
           busy={busy}
           listening={listening}
           speechSupported={speechSupported}
@@ -1060,7 +1075,20 @@ function MinePage({ user, settings, setSettings, onReset, onLoadDemo, onExport, 
       <section className="rounded-2xl bg-white p-4 shadow-soft">
         <h2 className="font-semibold">基础设置</h2>
         <label className="mt-3 block text-sm text-slate-500">默认支付方式</label>
-        <input value={settings.defaultPaymentMethod} onChange={(e) => setSettings({ ...settings, defaultPaymentMethod: e.target.value })} className="field" />
+        <select value={settings.defaultPaymentMethod} onChange={(e) => setSettings({ ...settings, defaultPaymentMethod: e.target.value })} className="field">
+          <option value="">不设置</option>
+          {settings.paymentMethods.map((method: string) => <option key={method} value={method}>{method}</option>)}
+        </select>
+        <label className="mt-3 block text-sm text-slate-500">常用支付方式</label>
+        <input
+          value={settings.paymentMethods.join('，')}
+          onChange={(e) => {
+            const methods = e.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+            setSettings({ ...settings, paymentMethods: Array.from(new Set([...methods, '其他'])) });
+          }}
+          className="field"
+          placeholder="支付宝，微信，银行卡，现金，其他"
+        />
         <label className="mt-3 block text-sm text-slate-500">报销关键词</label>
         <input value={settings.reimbursementKeywords} onChange={(e) => setSettings({ ...settings, reimbursementKeywords: e.target.value })} className="field" />
         <label className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 p-3">
@@ -1087,7 +1115,7 @@ function MinePage({ user, settings, setSettings, onReset, onLoadDemo, onExport, 
 }
 
 function InputPanel(props: any) {
-  const { input, setInput, parsed, setParsed, queryResult, engineStatus, busy, listening, speechSupported, onClose, onRecognize, onStartSpeech, onStopSpeech, onConfirm, canConfirm } = props;
+  const { input, setInput, parsed, setParsed, queryResult, engineStatus, settings, busy, listening, speechSupported, onClose, onRecognize, onStartSpeech, onStopSpeech, onConfirm, canConfirm } = props;
   const engineText: Record<EngineStatus, string> = {
     idle: '等待识别',
     qwen: 'Qwen 已优先解析',
@@ -1125,7 +1153,7 @@ function InputPanel(props: any) {
         <p className="mt-3 text-center text-sm text-slate-500">{listening ? '正在听你说，松开后结束' : '长按说话，松开识别；也可以说“删掉刚才那条账单”'}</p>
         <textarea value={input} onChange={(e) => setInput(e.target.value)} className="mt-4 min-h-24 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-3 outline-none focus:border-ink" placeholder="也可以直接输入一句话" />
         <button onClick={onRecognize} disabled={busy} className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-leaf py-3 font-semibold text-white disabled:opacity-60"><Search className="h-5 w-5" />{busy ? '识别中...' : '识别'}</button>
-        {parsed && parsed.intent !== 'query' && <ConfirmCard parsed={parsed} setParsed={setParsed} onConfirm={onConfirm} canConfirm={canConfirm} />}
+        {parsed && parsed.intent !== 'query' && <ConfirmCard parsed={parsed} setParsed={setParsed} onConfirm={onConfirm} canConfirm={canConfirm} paymentMethods={settings.paymentMethods} />}
         {parsed?.intent === 'query' && queryResult && <QueryResultCard result={queryResult} />}
         {parsed?.intent === 'unknown' && <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{parsed.message}</div>}
       </div>
@@ -1133,11 +1161,15 @@ function InputPanel(props: any) {
   );
 }
 
-function ConfirmCard({ parsed, setParsed, onConfirm, canConfirm }: any) {
+function ConfirmCard({ parsed, setParsed, onConfirm, canConfirm, paymentMethods }: any) {
   if (parsed.intent === 'expense' || parsed.intent === 'income') {
     const isIncome = parsed.intent === 'income';
     const e: Expense = isIncome ? parsed.income : parsed.expense;
     const update = (patch: Partial<Expense>) => setParsed(isIncome ? { ...parsed, income: { ...e, ...patch } } : { ...parsed, expense: { ...e, ...patch } });
+    const methodOptions = Array.from(new Set([...(paymentMethods || defaultSettings.paymentMethods), '其他'].filter(Boolean)));
+    const regularMethods = methodOptions.filter((method) => method !== '其他');
+    const selectedMethod = e.paymentMethod && regularMethods.includes(e.paymentMethod) ? e.paymentMethod : e.paymentMethod ? '其他' : '';
+    const needsCustomMethod = selectedMethod === '其他';
     return (
       <section className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
         <h3 className="mb-3 font-semibold">{isIncome ? '收入确认卡' : '记账确认卡'}</h3>
@@ -1145,10 +1177,11 @@ function ConfirmCard({ parsed, setParsed, onConfirm, canConfirm }: any) {
         <GridInput label="金额" value={String(e.amount)} onChange={(v: string) => update({ amount: Number(v) || 0 })} />
         <GridInput label="事项" value={e.item} onChange={(v: string) => update({ item: v })} />
         {!isIncome && <Select label="分类" value={e.category} options={expenseCategories} onChange={(v: string) => update({ category: v as ExpenseCategory })} />}
-        <GridInput label="支付方式" value={e.paymentMethod} onChange={(v: string) => update({ paymentMethod: v })} />
+        <Select label={isIncome ? '收款账户' : '支付方式'} value={selectedMethod} options={['', ...methodOptions]} onChange={(v: string) => update({ paymentMethod: v === '其他' ? '其他' : v })} />
+        {needsCustomMethod && <GridInput label="其他" value={e.paymentMethod} onChange={(v: string) => update({ paymentMethod: v })} placeholder="请输入方式" />}
         {!e.paymentMethod && (
           <div className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-700">
-            {isIncome ? '请问这笔收入是通过哪个账户收到的？' : '请问这笔消费的支付平台是什么？'}补充后才能保存。
+            {isIncome ? '请问这笔收入是通过哪个账户收到的？' : '请问这笔消费的支付平台是什么？'}请选择后才能保存。
           </div>
         )}
         {!isIncome && <Select label="报销状态" value={e.reimbursementStatus} options={['无需报销', '待报销', '已报销']} onChange={(v: string) => update({ reimbursementStatus: v as ReimbursementStatus, reimbursable: v !== '无需报销' })} />}
