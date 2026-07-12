@@ -12,7 +12,7 @@
 5. 添加环境变量：
    - `NODE_ENV=production`
    - `QWEN_API_KEY=你的通义千问/DashScope API Key`
-   - `QWEN_MODEL=qwen-plus`
+   - `QWEN_MODEL=qwen3.7-plus`
    - 可选：`LIFEFLOW_DATA_DIR=/var/data`
 6. 部署完成后，Render 会生成一个公网地址。
 

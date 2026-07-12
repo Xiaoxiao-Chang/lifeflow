@@ -78,6 +78,7 @@ type EngineInfo = { status: EngineStatus; model?: string };
 
 interface AuthUser {
   id: string;
+  phone?: string;
   username: string;
   createdAt: string;
 }
@@ -121,7 +122,7 @@ const demoSchedules: ScheduleItem[] = [
 ];
 
 const demoMemos: MemoItem[] = [
-  { id: uid(), title: '面试演示重点', content: '强调语音入口、Qwen 结构化、年度账单和备忘录场景。', status: '未完成', sourceText: '记一下，面试演示要强调语音入口和年度账单', createdAt: new Date().toISOString() },
+  { id: uid(), title: '面试演示重点', content: '强调语音入口、智能结构化、年度账单和备忘录场景。', status: '未完成', sourceText: '记一下，面试演示要强调语音入口和年度账单', createdAt: new Date().toISOString() },
 ];
 
 const defaultSettings: SettingsState = {
@@ -611,6 +612,7 @@ export default function App() {
   const [storedSettings, setSettings] = useStoredState<SettingsState>(`lifeflow-settings-${storageScope}`, defaultSettings);
   const settings = normalizeSettings(storedSettings);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [input, setInput] = useState('');
   const [parsed, setParsed] = useState<ParsedResult | null>(null);
   const [queryResult, setQueryResult] = useState<ReturnType<typeof buildQueryResult> | null>(null);
@@ -708,28 +710,52 @@ export default function App() {
     setMemos([]);
   }
 
-  function loadDemoData() {
-    setExpenses(demoExpenses);
-    setSchedules(demoSchedules);
-    setMemos(demoMemos);
+  function logout() {
+    setAccountOpen(false);
+    setUser(null);
   }
 
-function exportReimbursements() {
-    const body = [
-      '# LifeFlow 待报销清单',
-      '',
-      `总金额: ${yuan(sumExpenses(reimbursing))}`,
-      `笔数: ${reimbursing.length}`,
-      '',
-      ...reimbursing.map((e) => `- ${e.date} | ${e.item} | ${e.category} | ${yuan(e.amount)} | ${e.sourceText}`),
-    ].join('\n');
-    const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' });
+  async function deleteAccount() {
+    if (!window.confirm('确认注销账号？本机数据也会清空。')) return;
+    try {
+      await fetch('/api/auth/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user?.id }),
+      });
+    } finally {
+      resetData();
+      setAccountOpen(false);
+      setUser(null);
+    }
+  }
+
+  function downloadCsv(filename: string, rows: Array<Array<string | number | boolean>>) {
+    const escapeCell = (value: string | number | boolean) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const body = `\ufeff${rows.map((row) => row.map(escapeCell).join(',')).join('\n')}`;
+    const blob = new Blob([body], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lifeflow-reimbursements-${toDateKey(today)}.md`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function exportReimbursements() {
+    downloadCsv(`lifeflow-reimbursements-${toDateKey(today)}.csv`, [
+      ['日期', '事项', '分类', '金额', '支付方式', '报销状态', '原始输入'],
+      ...reimbursing.map((e) => [e.date, e.item, e.category, e.amount, e.paymentMethod, e.reimbursementStatus, e.sourceText]),
+    ]);
+  }
+
+  function exportAllData() {
+    downloadCsv(`lifeflow-data-${toDateKey(today)}.csv`, [
+      ['类型', '日期', '时间', '标题/事项', '金额', '分类/状态', '支付方式/地点', '备注/原始输入'],
+      ...expenses.map((e) => [e.type === 'income' ? '收入' : '账单', e.date, '', e.item, e.amount, e.category, e.paymentMethod, e.sourceText]),
+      ...schedules.map((s) => ['行程', s.date, s.endTime ? `${s.startTime}-${s.endTime}` : s.startTime, s.title, '', s.status, s.location, s.note || s.sourceText]),
+      ...memos.map((m) => ['备忘', m.createdAt.slice(0, 10), '', m.title, '', m.status, '', m.content || m.sourceText]),
+    ]);
   }
 
   function canConfirmCurrent() {
@@ -746,12 +772,12 @@ function exportReimbursements() {
   return (
     <div className="min-h-screen bg-[linear-gradient(135deg,#eef6f2,#f7f7fb_45%,#fff4ef)] text-ink md:grid md:place-items-center">
       <main className="mx-auto flex h-[100dvh] w-full max-w-[390px] flex-col overflow-hidden bg-mist shadow-phone md:my-5 md:h-[calc(100vh-40px)] md:rounded-[34px] md:border-[8px] md:border-white">
-        <AppHeader tab={tab} user={user} onLogout={() => setUser(null)} />
+        <AppHeader tab={tab} user={user} onAccount={() => setAccountOpen(true)} />
         <section className="flex-1 overflow-y-auto px-4 pb-28 pt-3">
           {tab === 'home' && <HomePage user={user} stats={stats} todaySchedules={todaySchedules} reimbursing={reimbursing} goLedger={() => setTab('ledger')} goSchedule={() => setTab('schedule')} openPanel={() => setPanelOpen(true)} />}
           {tab === 'ledger' && <LedgerPage expenses={expenses} stats={stats} onDelete={(id: string) => setExpenses(expenses.filter((e) => e.id !== id))} onPaid={(id: string) => setExpenses(expenses.map((e) => e.id === id ? { ...e, reimbursable: true, reimbursementStatus: '已报销' } : e))} onExport={exportReimbursements} />}
           {tab === 'schedule' && <SchedulePage view={scheduleView} setView={setScheduleView} month={scheduleMonth} setMonth={setScheduleMonth} schedules={schedules} memos={memos} onMemoDone={(id: string) => setMemos(memos.map((m) => m.id === id ? { ...m, status: '已完成' } : m))} onMemoDelete={(id: string) => setMemos(memos.filter((m) => m.id !== id))} onDelete={(id: string) => setSchedules(schedules.filter((s) => s.id !== id))} />}
-          {tab === 'mine' && <MinePage user={user} settings={settings} setSettings={setSettings} onReset={resetData} onLoadDemo={loadDemoData} onExport={exportReimbursements} expenses={expenses} schedules={schedules} memos={memos} onQuery={(q: string) => { setInput(q); setPanelOpen(true); void recognize(q); }} />}
+          {tab === 'mine' && <MinePage settings={settings} setSettings={setSettings} onReset={resetData} onExport={exportAllData} expenses={expenses} schedules={schedules} memos={memos} onQuery={(q: string) => { setInput(q); setPanelOpen(true); void recognize(q); }} />}
         </section>
         <BottomNav tab={tab} setTab={(next) => next === 'voice' ? setPanelOpen(true) : setTab(next)} />
       </main>
@@ -775,32 +801,121 @@ function exportReimbursements() {
           canConfirm={canConfirmCurrent()}
         />
       )}
+      {accountOpen && (
+        <AccountSheet user={user} setUser={setUser} onClose={() => setAccountOpen(false)} onLogout={logout} onDelete={deleteAccount} />
+      )}
     </div>
   );
 }
 
 function AuthScreen({ onAuthed }: { onAuthed: (user: AuthUser) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [page, setPage] = useState<'login' | 'register'>('login');
+  const [loginMode, setLoginMode] = useState<'sms' | 'password'>('sms');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [devCode, setDevCode] = useState('');
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [countdown, setCountdown] = useState(0);
 
-  async function submit() {
+  useEffect(() => {
+    if (!countdown) return;
+    const timer = window.setTimeout(() => setCountdown((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [countdown]);
+
+  const cleanPhone = phone.replace(/\D/g, '').replace(/^86(?=1\d{10}$)/, '');
+
+  function resetAuthState(nextPage: 'login' | 'register') {
+    setPage(nextPage);
+    setLoginMode('sms');
+    setCode('');
+    setUsername('');
+    setPassword('');
+    setDevCode('');
+    setNotice('');
     setError('');
-    if (!username.trim() || !password.trim()) {
-      setError('请输入用户名和密码');
+    setSent(false);
+  }
+
+  async function sendCode() {
+    setError('');
+    setNotice('');
+    setDevCode('');
+    if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+      setError('请输入有效的中国大陆手机号');
       return;
     }
     setBusy(true);
     try {
-      const res = await fetch(`/api/auth/${mode}`, {
+      const res = await fetch('/api/auth/sms/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ phone: cleanPhone }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '操作失败');
+      if (!res.ok) throw new Error(data.error || '验证码发送失败');
+      setSent(true);
+      setCountdown(60);
+      setNotice(data.message || '验证码已发送');
+      if (data.devCode) {
+        setDevCode(data.devCode);
+        setCode(data.devCode);
+      }
+      if (page === 'register' && !username.trim()) setUsername(`LifeFlow_${cleanPhone.slice(-4)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '网络异常');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitSms() {
+    setError('');
+    if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+      setError('请输入有效的中国大陆手机号');
+      return;
+    }
+    if (!/^\d{6}$/.test(code.trim())) {
+      setError('请输入 6 位验证码');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/auth/sms/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone, code: code.trim(), username: username.trim(), mode: page }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '登录失败');
+      onAuthed(data.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '网络异常');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitPassword() {
+    setError('');
+    if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+      setError('请输入有效的中国大陆手机号');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/auth/password/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '登录失败');
       onAuthed(data.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : '网络异常');
@@ -813,6 +928,11 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: AuthUser) => void }) {
     <div className="min-h-screen bg-[linear-gradient(135deg,#eef6f2,#f7f7fb_45%,#fff4ef)] text-ink md:grid md:place-items-center">
       <main className="mx-auto flex h-[100dvh] w-full max-w-[390px] flex-col bg-white px-6 py-8 shadow-phone md:my-5 md:h-[calc(100vh-40px)] md:rounded-[34px] md:border-[8px] md:border-white">
         <div className="mt-10">
+          {page === 'register' && (
+            <button onClick={() => resetAuthState('login')} className="mb-6 flex items-center gap-1 text-sm font-semibold text-slate-500">
+              <ChevronRight className="h-4 w-4 rotate-180" /> 返回
+            </button>
+          )}
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-ink text-white shadow-soft">
             <Sparkles className="h-7 w-7" />
           </div>
@@ -821,29 +941,64 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: AuthUser) => void }) {
         </div>
 
         <section className="mt-10 rounded-3xl bg-mist p-4">
-          <div className="grid grid-cols-2 rounded-2xl bg-white p-1">
-            <button onClick={() => setMode('login')} className={`rounded-xl py-2 text-sm font-semibold ${mode === 'login' ? 'bg-ink text-white' : 'text-slate-500'}`}>登录</button>
-            <button onClick={() => setMode('register')} className={`rounded-xl py-2 text-sm font-semibold ${mode === 'register' ? 'bg-ink text-white' : 'text-slate-500'}`}>注册</button>
+          {page === 'login' && (
+            <div className="mb-4 grid grid-cols-2 rounded-2xl bg-white p-1">
+              <button onClick={() => setLoginMode('sms')} className={`rounded-xl py-2 text-sm font-semibold ${loginMode === 'sms' ? 'bg-ink text-white' : 'text-slate-500'}`}>验证码登录</button>
+              <button onClick={() => setLoginMode('password')} className={`rounded-xl py-2 text-sm font-semibold ${loginMode === 'password' ? 'bg-ink text-white' : 'text-slate-500'}`}>密码登录</button>
+            </div>
+          )}
+          <label className="mt-5 block text-sm text-slate-500">手机号</label>
+          <div className="mt-2 flex gap-2">
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" className="field flex-1 bg-white" placeholder="请输入手机号" />
+            {(page === 'register' || loginMode === 'sms') && (
+              <button onClick={sendCode} disabled={busy || countdown > 0} className="rounded-2xl bg-white px-4 text-sm font-semibold text-ink shadow-soft disabled:text-slate-400">
+                {countdown ? `${countdown}s` : '获取验证码'}
+              </button>
+            )}
           </div>
-          <label className="mt-5 block text-sm text-slate-500">用户名</label>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} className="field mt-2 bg-white" placeholder="例如 lifeflow_demo" />
-          <label className="mt-4 block text-sm text-slate-500">密码</label>
-          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="field mt-2 bg-white" placeholder="至少 6 位" />
+          {(page === 'register' || loginMode === 'sms') && (
+            <>
+              <label className="mt-4 block text-sm text-slate-500">验证码</label>
+              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={6} className="field mt-2 bg-white" placeholder="6 位短信验证码" />
+            </>
+          )}
+          {page === 'register' && (
+            <>
+              <label className="mt-4 block text-sm text-slate-500">用户名</label>
+              <div className="mt-2 flex gap-2">
+                <input value={username} onChange={(e) => setUsername(e.target.value)} className="field flex-1 bg-white" placeholder="请输入用户名" />
+                <button onClick={() => setUsername(`LifeFlow_${Math.floor(1000 + Math.random() * 9000)}`)} type="button" className="rounded-2xl bg-white px-4 text-sm font-semibold text-ink shadow-soft">
+                  随机
+                </button>
+              </div>
+            </>
+          )}
+          {page === 'login' && loginMode === 'password' && (
+            <>
+              <label className="mt-4 block text-sm text-slate-500">密码</label>
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="field mt-2 bg-white" placeholder="请输入密码" />
+            </>
+          )}
+          {notice && <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{notice}</div>}
+          {devCode && <div className="mt-3 rounded-2xl bg-amber-50 p-3 text-sm text-amber-700">本地测试验证码：{devCode}</div>}
           {error && <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-600">{error}</div>}
-          <button onClick={submit} disabled={busy} className="mt-5 w-full rounded-2xl bg-ink py-4 font-semibold text-white disabled:opacity-60">
-            {busy ? '处理中...' : mode === 'login' ? '进入 LifeFlow' : '创建账号'}
+          <button onClick={page === 'login' && loginMode === 'password' ? submitPassword : sent ? submitSms : sendCode} disabled={busy} className="mt-5 w-full rounded-2xl bg-ink py-4 font-semibold text-white disabled:opacity-60">
+            {busy ? '处理中...' : page === 'register' ? '注册并进入' : '进入 LifeFlow'}
           </button>
+          {page === 'login' && (
+            <button onClick={() => resetAuthState('register')} className="mt-4 w-full text-center text-sm font-semibold text-leaf">
+              注册账号
+            </button>
+          )}
         </section>
 
-        <div className="mt-auto rounded-3xl bg-[#f8fafc] p-4 text-sm leading-6 text-slate-500">
-          账号保存在本地 SQLite 数据库中，密码会加盐哈希后入库。登录后首页保持干净，从第一条语音记录开始。
-        </div>
+        <div className="mt-auto rounded-3xl bg-[#f8fafc] p-4 text-sm leading-6 text-slate-500">一句话记录账单、行程、备忘和灵感。</div>
       </main>
     </div>
   );
 }
 
-function AppHeader({ tab, user, onLogout }: { tab: Tab; user: AuthUser; onLogout: () => void }) {
+function AppHeader({ tab, user, onAccount }: { tab: Tab; user: AuthUser; onAccount: () => void }) {
   const titles: Record<Tab, string> = { home: 'LifeFlow', ledger: '账本', voice: '语音', schedule: '行程', mine: '我的' };
   return (
     <header className="flex items-center justify-between bg-mist px-5 pb-2 pt-5">
@@ -851,10 +1006,113 @@ function AppHeader({ tab, user, onLogout }: { tab: Tab; user: AuthUser; onLogout
         <h1 className="text-2xl font-bold tracking-normal">{titles[tab]}</h1>
         <p className="text-sm text-slate-500">{tab === 'home' ? `${user.username}，一句话管理生活` : '语音个人规划助手'}</p>
       </div>
-      <button onClick={onLogout} className="grid h-10 w-10 place-items-center rounded-full bg-white shadow-soft">
+      <button onClick={onAccount} className="grid h-10 w-10 place-items-center rounded-full bg-white shadow-soft">
         <UserRound className="h-5 w-5 text-leaf" />
       </button>
     </header>
+  );
+}
+
+function AccountSheet({ user, setUser, onClose, onLogout, onDelete }: { user: AuthUser; setUser: (user: AuthUser) => void; onClose: () => void; onLogout: () => void; onDelete: () => void }) {
+  const [draftName, setDraftName] = useState(user.username);
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function saveName() {
+    const nextName = draftName.trim();
+    if (!nextName) {
+      setMessage('用户名不能为空');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/auth/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user.id, username: nextName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '保存失败');
+      setUser(data.user);
+      setMessage('用户名已保存');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '网络异常');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePassword() {
+    if (password.length < 6) {
+      setMessage('密码至少 6 位');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/auth/password/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user.id, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '保存失败');
+      setUser(data.user);
+      setPassword('');
+      setMessage('密码已设置');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '网络异常');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid items-end bg-slate-900/30 backdrop-blur-sm">
+      <div className="mx-auto max-h-[88dvh] w-full max-w-[390px] overflow-y-auto rounded-t-[28px] bg-white p-5 shadow-phone">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold">账号管理</h2>
+            {user.phone && !user.phone.startsWith('legacy_') && <p className="text-sm text-slate-500">{user.phone.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')}</p>}
+          </div>
+          <button onClick={onClose} className="icon-btn"><X className="h-5 w-5" /></button>
+        </div>
+
+        <section className="rounded-2xl bg-mist p-4">
+          <h3 className="font-semibold">用户名设置</h3>
+          <div className="mt-3 flex gap-2">
+            <input value={draftName} onChange={(e) => setDraftName(e.target.value)} className="field flex-1 bg-white" />
+            <button onClick={() => setDraftName(`LifeFlow_${Math.floor(1000 + Math.random() * 9000)}`)} className="rounded-2xl bg-white px-4 text-sm font-semibold text-ink shadow-soft">随机</button>
+          </div>
+          <button onClick={saveName} disabled={busy || draftName.trim() === user.username} className="mt-3 w-full rounded-2xl bg-ink py-3 text-sm font-semibold text-white disabled:opacity-50">保存用户名</button>
+        </section>
+
+        <section className="mt-3 rounded-2xl bg-mist p-4">
+          <h3 className="font-semibold">密码设置</h3>
+          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="field mt-3 bg-white" placeholder="设置登录密码" />
+          <button onClick={savePassword} disabled={busy} className="mt-3 w-full rounded-2xl bg-ink py-3 text-sm font-semibold text-white disabled:opacity-50">保存密码</button>
+        </section>
+
+        <section className="mt-3 rounded-2xl bg-mist p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold">API 管理</h3>
+              <p className="mt-1 text-sm text-slate-500">模型服务与密钥配置</p>
+            </div>
+            <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-400">待开放</span>
+          </div>
+        </section>
+
+        {message && <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{message}</div>}
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button onClick={onLogout} className="rounded-2xl bg-slate-100 py-3 text-sm font-semibold text-ink">退出登录</button>
+          <button onClick={onDelete} className="rounded-2xl bg-red-50 py-3 text-sm font-semibold text-red-600">注销账号</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1063,15 +1321,9 @@ function SchedulePage({ view, setView, month, setMonth, schedules, memos, onDele
   );
 }
 
-function MinePage({ user, settings, setSettings, onReset, onLoadDemo, onExport, expenses, schedules, memos }: any) {
+function MinePage({ settings, setSettings, onReset, onExport, expenses, schedules, memos }: any) {
   return (
     <div className="space-y-4">
-      <section className="rounded-2xl bg-white p-4 shadow-soft">
-        <h2 className="font-semibold">账号</h2>
-        <p className="mt-2 text-sm text-slate-500">当前账号</p>
-        <p className="mt-1 text-xl font-bold">{user.username}</p>
-        <p className="mt-2 text-xs text-slate-400">账号保存在本地 SQLite 数据库中，密码加盐哈希存储。</p>
-      </section>
       <section className="rounded-2xl bg-white p-4 shadow-soft">
         <h2 className="font-semibold">基础设置</h2>
         <label className="mt-3 block text-sm text-slate-500">默认支付方式</label>
@@ -1098,7 +1350,6 @@ function MinePage({ user, settings, setSettings, onReset, onLoadDemo, onExport, 
       </section>
       <section className="grid grid-cols-2 gap-3">
         <button onClick={onExport} className="rounded-2xl bg-white p-4 text-left font-semibold shadow-soft"><Download className="mb-2 h-5 w-5" />数据导出</button>
-        <button onClick={onLoadDemo} className="rounded-2xl bg-white p-4 text-left font-semibold shadow-soft"><Plus className="mb-2 h-5 w-5" />加载演示数据</button>
         <button onClick={onReset} className="rounded-2xl bg-white p-4 text-left font-semibold text-red-600 shadow-soft"><Trash2 className="mb-2 h-5 w-5" />清空本地数据</button>
       </section>
       <section className="rounded-2xl bg-white p-4 shadow-soft">
@@ -1118,9 +1369,9 @@ function InputPanel(props: any) {
   const { input, setInput, parsed, setParsed, queryResult, engineStatus, settings, busy, listening, speechSupported, onClose, onRecognize, onStartSpeech, onStopSpeech, onConfirm, canConfirm } = props;
   const engineText: Record<EngineStatus, string> = {
     idle: '等待识别',
-    qwen: 'Qwen 已优先解析',
+    qwen: '智能解析完成',
     rules: '规则识别',
-    'qwen-unavailable': 'Qwen 未连通，已临时用规则兜底',
+    'qwen-unavailable': '智能解析暂时不可用，已临时处理',
   };
   return (
     <div className="fixed inset-0 z-50 grid items-end bg-slate-900/30 backdrop-blur-sm">
@@ -1135,7 +1386,7 @@ function InputPanel(props: any) {
         {!speechSupported && <div className="mb-3 rounded-2xl bg-amber-50 p-3 text-sm text-amber-700">当前浏览器不支持语音识别，请使用文字输入</div>}
         <div className="mb-4 space-y-2 rounded-3xl bg-slate-50 p-3">
           <div className="max-w-[86%] rounded-2xl bg-white px-3 py-2 text-sm text-slate-600 shadow-sm">
-            我会先用 Qwen 理解你的话，再生成可确认的账单、收入、行程或查询结果。信息不完整时，我会在确认卡里继续问你。
+            我会先理解你的话，再生成可确认的账单、收入、行程或查询结果。信息不完整时，我会在确认卡里继续问你。
           </div>
           {input && <div className="ml-auto max-w-[86%] rounded-2xl bg-ink px-3 py-2 text-sm text-white">{input}</div>}
         </div>
